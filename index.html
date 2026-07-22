@@ -45,6 +45,7 @@
 	width: 1600px;
 	height: 1600px;
 	-webkit-transform-origin: 0 0;
+  transform-origin: 0 0;
 	}
 .leaflet-marker-icon,
 .leaflet-marker-shadow {
@@ -109,6 +110,7 @@
 /* workaround for https://bugzilla.mozilla.org/show_bug.cgi?id=888319 */
 .leaflet-overlay-pane svg {
 	-moz-user-select: none;
+  user-select: none;
 	}
 
 .leaflet-pane         { z-index: 400; }
@@ -553,6 +555,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
 	}
 
 .leaflet-oldie .leaflet-popup-content-wrapper {
+  zoom: 1;
 	-ms-zoom: 1;
 	}
 .leaflet-oldie .leaflet-popup-tip {
@@ -1150,7 +1153,16 @@ svg.leaflet-image-layer.leaflet-interactive path {
     .brand-mark { width:34px; height:34px; flex-basis:34px; }
     #left-panel { min-width:0; }
     #left-scroll { padding:18px; }
+    #left-panel.mobile-collapsed { max-height:58px; }
+    #left-panel.mobile-collapsed #left-scroll { overflow:hidden; }
+    #left-panel.mobile-collapsed .mobile-panel-toggle svg { transform:rotate(180deg); }
+    .mobile-panel-toggle { display:flex !important; }
   }
+  .mobile-panel-toggle { display:none; width:100%; justify-content:space-between; align-items:center; padding:10px 14px; border:0; border-bottom:1px solid var(--border); background:#F7F9FB; color:var(--primary); font:600 12px var(--font); cursor:pointer; }
+  .mobile-panel-toggle svg { width:16px; height:16px; transition:transform .18s ease; }
+  .weather-extra { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .traffic-note { margin-top:8px; padding:8px 10px; border-radius:8px; background:#F3F7FA; color:var(--text-secondary); font-size:11px; }
+  @media print { #topbar, #right-panel, #offline-banner, .btn, .modal-overlay, #toast-container { display:none !important; } #app, #left-panel { height:auto; display:block; max-width:none; width:100%; overflow:visible; } #left-scroll { overflow:visible; padding:0; } #results-section { display:block !important; } body { background:#fff; } }
 </style>
 
 
@@ -1314,6 +1326,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
 
   <!-- Левая панель -->
   <div id="left-panel">
+    <button class="mobile-panel-toggle" onclick="toggleMobilePanel()" aria-expanded="true">Параметры расчёта <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 9 6 6 6-6"/></svg></button>
     <div id="left-scroll">
 
       <!-- СЕКЦИЯ: Маршрут -->
@@ -1388,6 +1401,9 @@ svg.leaflet-image-layer.leaflet-interactive path {
             Другое
             <span class="cargo-range">вручную</span>
           </button>
+          <button class="cargo-btn" data-cargo="pharma" onclick="selectCargo(this)"><span class="cargo-icon">⚕</span>Лекарства<span class="cargo-range">+2…+8°C</span></button>
+          <button class="cargo-btn" data-cargo="produce" onclick="selectCargo(this)"><span class="cargo-icon">♧</span>Продукты<span class="cargo-range">0…+10°C</span></button>
+          <button class="cargo-btn" data-cargo="flowers" onclick="selectCargo(this)"><span class="cargo-icon">✿</span>Цветы<span class="cargo-range">+4…+12°C</span></button>
         </div>
         <div id="custom-temp" style="display:none; margin-top:10px">
           <label class="field-label">Допустимый диапазон температур</label>
@@ -1449,7 +1465,10 @@ svg.leaflet-image-layer.leaflet-interactive path {
           <div id="weather-detail" style="margin-top:6px; font-size:11px; color:var(--text-secondary)">
             Нажмите на маркер на карте для деталей
           </div>
+          <div class="weather-extra" id="weather-extra"></div>
+          <div class="traffic-note" id="traffic-note">Пробки: расчёт по средней скорости</div>
         </div>
+        <div class="btn-row report-actions"><button class="btn btn-outline btn-sm" onclick="printReport()">🖨 Печать / PDF</button></div>
 
         <!-- Прогноз доставки по этапам -->
         <div class="result-card" id="delivery-card" style="display:none">
@@ -1516,6 +1535,12 @@ svg.leaflet-image-layer.leaflet-interactive path {
           <label>Число точек погоды</label>
           <input type="number" class="inp" id="set-points" value="20" min="5" max="50" />
         </div>
+      </div>
+      <div class="settings-group">
+        <h3>Погода и трафик</h3>
+        <div class="settings-row"><label>Кеш погоды (мин)</label><input type="number" class="inp" id="set-cache" value="30" min="0" max="1440" /></div>
+        <div class="settings-row"><label>URL трафика (необязательно)</label><input type="url" class="inp" id="set-traffic-url" placeholder="https://...{lat},{lon}" /></div>
+        <small style="display:block;margin-top:8px;color:var(--text-secondary)">Шаблон должен возвращать JSON с полем <code>speedKmh</code> или <code>delayMinutes</code>. Ключ хранится только в браузере.</small>
       </div>
       <div class="settings-group">
         <h3>Пороги рекомендации</h3>
@@ -1617,12 +1642,17 @@ const CONFIG = {
   weatherPoints: 20,
   thresh1: 1,
   thresh2: 30,
+  cacheMinutes: 30,
+  trafficUrl: '',
 };
 
 const CARGO_PRESETS = {
   dry:     { min: 5,    max: 25,   label: 'Сухое детское питание',    range: '+5…+25°C' },
   chilled: { min: 2,    max: 6,    label: 'Охлаждённое питание',       range: '+2…+6°C'  },
   frozen:  { min: -100, max: -18,  label: 'Замороженное питание',      range: '≤ −18°C'  },
+  pharma:  { min: 2,    max: 8,    label: 'Лекарственные препараты',    range: '+2…+8°C'  },
+  produce: { min: 0,    max: 10,   label: 'Свежие продукты',             range: '0…+10°C'  },
+  flowers: { min: 4,    max: 12,   label: 'Цветы',                       range: '+4…+12°C' },
   custom:  { min: null, max: null, label: 'Нестандартный груз',        range: 'вручную'  },
 };
 
@@ -1670,6 +1700,8 @@ function loadSettings() {
     if (s.weatherPoints) CONFIG.weatherPoints = s.weatherPoints;
     if (s.thresh1 !== undefined) CONFIG.thresh1 = s.thresh1;
     if (s.thresh2 !== undefined) CONFIG.thresh2 = s.thresh2;
+    if (s.cacheMinutes !== undefined) CONFIG.cacheMinutes = s.cacheMinutes;
+    if (s.trafficUrl !== undefined) CONFIG.trafficUrl = s.trafficUrl;
   } catch(e) {}
 }
 
@@ -1895,6 +1927,7 @@ async function calculate() {
     const avgSpeedMs = CONFIG.avgSpeed;
 
     const weatherData = await fetchWeatherForPoints(pts, departTs, distKm, avgSpeedMs, route.geometry.coordinates);
+    const traffic = await fetchTraffic(route.geometry.coordinates, route.duration);
     updateLoading('Анализ данных…', 85);
 
     const stageNames = [
@@ -1919,7 +1952,8 @@ async function calculate() {
       tempMin: range.min,
       tempMax: range.max,
       distKm: Math.round(distKm),
-      durationH: route.duration / 3600,
+      durationH: traffic.durationH,
+      traffic,
       dangerPct: analysis.dangerPct,
       recommendation,
       weatherData,
@@ -1960,6 +1994,21 @@ async function fetchOSRMRoute(coordStr) {
   const data = await r.json();
   if (data.code !== 'Ok' || !data.routes?.length) throw new Error('Маршрут не найден');
   return data.routes[0];
+}
+
+async function fetchWithRetry(url, options = {}, attempts = 3) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const r = await fetch(url, options);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r;
+    } catch (e) {
+      lastError = e;
+      if (i < attempts - 1) await new Promise(resolve => setTimeout(resolve, 350 * (i + 1)));
+    }
+  }
+  throw lastError || new Error('Сетевой запрос не выполнен');
 }
 
 function sampleRoutePoints(coordinates, n) {
@@ -2026,12 +2075,21 @@ async function fetchWeatherForPoints(pts, departTs, distKm, avgSpeed, allCoords)
     const lats = group.map(p => parseFloat(p.lat).toFixed(4)).join(',');
     const lons = group.map(p => parseFloat(p.lon).toFixed(4)).join(',');
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}` +
-      `&daily=temperature_2m_max,temperature_2m_min,weathercode` +
+      `&daily=temperature_2m_max,temperature_2m_min,weathercode,precipitation_sum,rain_sum,snowfall_sum` +
+      `&hourly=relative_humidity_2m,wind_speed_10m` +
       `&start_date=${dateStr}&end_date=${dateStr}&timezone=auto`;
+    const cacheKey = 'weather_' + btoa(unescape(encodeURIComponent(url))).replace(/=+$/, '');
     try {
-      const r = await fetch(url);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
+      let data = null;
+      try {
+        const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+        if (cached && Date.now() - cached.time < CONFIG.cacheMinutes * 60000) data = cached.data;
+      } catch (e) {}
+      if (!data) {
+        const r = await fetchWithRetry(url);
+        data = await r.json();
+        try { localStorage.setItem(cacheKey, JSON.stringify({ time: Date.now(), data })); } catch (e) {}
+      }
       const arr  = Array.isArray(data) ? data : [data];
       arr.forEach((d, j) => {
         const p = group[j];
@@ -2041,18 +2099,38 @@ async function fetchWeatherForPoints(pts, departTs, distKm, avgSpeed, allCoords)
           tMax:    d.daily?.temperature_2m_max?.[0]  ?? null,
           tMin:    d.daily?.temperature_2m_min?.[0]  ?? null,
           wcode:   d.daily?.weathercode?.[0]          ?? null,
+          precipitation: d.daily?.precipitation_sum?.[0] ?? null,
+          rain: d.daily?.rain_sum?.[0] ?? null,
+          snowfall: d.daily?.snowfall_sum?.[0] ?? null,
+          humidity: d.hourly?.relative_humidity_2m?.[Math.min(p.hoursElapsed, (d.hourly?.relative_humidity_2m?.length || 1) - 1)] ?? null,
+          wind: d.hourly?.wind_speed_10m?.[Math.min(p.hoursElapsed, (d.hourly?.wind_speed_10m?.length || 1) - 1)] ?? null,
           hoursElapsed: p.hoursElapsed,
         };
       });
     } catch (e) {
       group.forEach(p => {
         results[p.origIdx] = { lat: p.lat, lon: p.lon, date: dateStr,
-          tMax: null, tMin: null, wcode: null, error: true };
+          tMax: null, tMin: null, wcode: null, humidity: null, wind: null, precipitation: null, error: true };
       });
     }
   }));
 
   return results.map(r => r ?? { lat: 0, lon: 0, date: '', tMax: null, tMin: null, error: true });
+}
+
+async function fetchTraffic(coords, baseDuration) {
+  if (!CONFIG.trafficUrl) return { source: 'Средняя скорость', delayMinutes: 0, durationH: baseDuration / 3600 };
+  const point = coords[Math.floor(coords.length / 2)];
+  const url = CONFIG.trafficUrl.replace('{lat}', point[1]).replace('{lon}', point[0]);
+  try {
+    const data = await (await fetchWithRetry(url, {}, 2)).json();
+    const delay = Number(data.delayMinutes || 0);
+    const speed = Number(data.speedKmh || 0);
+    const durationH = speed > 0 ? (routeLength(coords) / speed) : baseDuration / 3600 + delay / 60;
+    return { source: 'API трафика', delayMinutes: delay, durationH };
+  } catch (e) {
+    return { source: 'API трафика недоступен', delayMinutes: 0, durationH: baseDuration / 3600, error: true };
+  }
 }
 
 function analyzeWeather(weatherData, range) {
@@ -2085,7 +2163,8 @@ function drawRoute(route) {
 }
 
 function drawWeatherMarkers(weatherData, range) {
-  weatherData.forEach((w, i) => {
+  const visible = weatherData.filter((w, i, all) => i === 0 || i === all.length - 1 || haversine([all[i - 1].lon, all[i - 1].lat], [w.lon, w.lat]) > 35);
+  visible.forEach((w, i) => {
     const status = getWeatherStatus(w, range);
     const color = status === 'ok' ? '#43A047' : status === 'warn' ? '#F9A825' : '#E53935';
     const icon = L.divIcon({
@@ -2129,6 +2208,8 @@ function buildWeatherPopup(w, range, n) {
     📅 ${w.date}${w.hoursElapsed ? ' (+' + w.hoursElapsed + ' ч)' : ''}<br/>
     ${wxLabel ? wxLabel + '<br/>' : ''}
     🌡 max: <b>${tMaxStr}</b> / min: <b>${tMinStr}</b><br/>
+    💧 Влажность: <b>${w.humidity ?? 'н/д'}%</b> · 💨 Ветер: <b>${w.wind ?? 'н/д'} км/ч</b><br/>
+    ☔ Осадки: <b>${w.precipitation ?? 'н/д'} мм</b><br/>
     <span style="color:#888">Норма: ${normStr}</span><br/>
     ${statusText}
   </div>`;
@@ -2181,6 +2262,14 @@ function showResults(result, analysis, weatherData) {
     const labels = wcodes.slice(0, 3).map(c => WMO_LABELS[c] || `Код ${c}`).join(', ');
     sum.innerHTML += `<div class="weather-chip" style="background:var(--bg);color:var(--text-secondary)">${labels}</div>`;
   }
+  const extra = document.getElementById('weather-extra');
+  const validExtra = weatherData.filter(w => w.humidity !== null || w.wind !== null || w.precipitation !== null);
+  if (validExtra.length) {
+    const avg = key => validExtra.filter(w => Number.isFinite(w[key])).reduce((s, w) => s + w[key], 0) / Math.max(1, validExtra.filter(w => Number.isFinite(w[key])).length);
+    extra.innerHTML = `<span class="weather-chip">💧 Влажность: ${avg('humidity').toFixed(0)}%</span><span class="weather-chip">💨 Ветер: ${avg('wind').toFixed(0)} км/ч</span><span class="weather-chip">☔ Осадки: ${validExtra.reduce((s, w) => s + (w.precipitation || 0), 0).toFixed(1)} мм</span>`;
+  } else extra.innerHTML = '';
+  const traffic = result.traffic || { source: 'Средняя скорость', delayMinutes: 0 };
+  document.getElementById('traffic-note').textContent = `Пробки: ${traffic.source}${traffic.delayMinutes ? `, задержка ${traffic.delayMinutes} мин` : ''}${traffic.error ? ' (использована средняя скорость)' : ''}`;
 
   const warnEl = document.getElementById('transport-conflict-warn');
   if (rec.manual) {
@@ -2359,6 +2448,8 @@ function openSettings() {
   document.getElementById('set-points').value = CONFIG.weatherPoints;
   document.getElementById('set-thresh1').value = CONFIG.thresh1;
   document.getElementById('set-thresh2').value = CONFIG.thresh2;
+  document.getElementById('set-cache').value = CONFIG.cacheMinutes;
+  document.getElementById('set-traffic-url').value = CONFIG.trafficUrl;
   openModal('settings-modal');
   updateThreshPreview();
 }
@@ -2380,11 +2471,25 @@ function updateThreshPreview() {
 function applySettings() {
   CONFIG.avgSpeed = parseFloat(document.getElementById('set-speed').value) || 60;
   CONFIG.weatherPoints = parseInt(document.getElementById('set-points').value) || 20;
-  CONFIG.thresh1 = parseFloat(document.getElementById('set-thresh1').value);
-  CONFIG.thresh2 = parseFloat(document.getElementById('set-thresh2').value);
+  CONFIG.thresh1 = Math.max(0, Math.min(98, parseFloat(document.getElementById('set-thresh1').value) || 1));
+  CONFIG.thresh2 = Math.max(CONFIG.thresh1 + 1, Math.min(100, parseFloat(document.getElementById('set-thresh2').value) || 30));
+  CONFIG.cacheMinutes = Math.max(0, parseInt(document.getElementById('set-cache').value) || 0);
+  CONFIG.trafficUrl = document.getElementById('set-traffic-url').value.trim();
   localStorage.setItem('cargo_settings', JSON.stringify(CONFIG));
   closeModal('settings-modal');
   showToast('Настройки сохранены', 'success');
+}
+
+function printReport() {
+  if (!currentResult) { showToast('Сначала рассчитайте маршрут', 'warning'); return; }
+  window.print();
+}
+
+function toggleMobilePanel() {
+  const panel = document.getElementById('left-panel');
+  const button = document.querySelector('.mobile-panel-toggle');
+  const collapsed = panel.classList.toggle('mobile-collapsed');
+  button.setAttribute('aria-expanded', String(!collapsed));
 }
 
 
